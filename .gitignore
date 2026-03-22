@@ -1,0 +1,36 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+node_modules/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# VS Code / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+description_update_report.txt
+test_run.bat
+song_list.xlsx
+requirements.temp.txt

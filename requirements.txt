@@ -1,0 +1,13 @@
+Django>=4.0
+djangorestframework
+djangorestframework-simplejwt
+django-environ
+django-cors-headers
+django-mongodb-backend
+pymongo
+certifi
+cloudinary
+django-cloudinary-storage
+razorpay
+pandas
+openpyxl
