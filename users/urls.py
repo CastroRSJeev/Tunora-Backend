@@ -12,4 +12,7 @@ urlpatterns = [
     path('logout/', views.logout_view, name='logout'),
     path('me/', views.me_view, name='me'),
     path('onboarding/', views.onboarding_view, name='onboarding'),
+    path('forgot-password/', views.forgot_password_view, name='forgot-password'),
+    path('verify-reset-otp/', views.verify_reset_otp_view, name='verify-reset-otp'),
+    path('reset-password/', views.reset_password_view, name='reset-password'),
 ]

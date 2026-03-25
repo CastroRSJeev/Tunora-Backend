@@ -25,3 +25,22 @@ def send_otp_email(email, otp_code):
         [email],
         fail_silently=False,
     )
+
+
+def send_password_reset_email(email, otp_code):
+    """Send password reset OTP email to the user."""
+    subject = 'Tunora — Reset Your Password'
+    message = (
+        f'Hello! 🎵\n\n'
+        f'You requested to reset your password.\n\n'
+        f'Your reset code is: {otp_code}\n\n'
+        f'This code expires in {getattr(settings, "OTP_EXPIRY_MINUTES", 5)} minutes.\n\n'
+        f'If you did not request this, please ignore this email.'
+    )
+    send_mail(
+        subject,
+        message,
+        settings.DEFAULT_FROM_EMAIL,
+        [email],
+        fail_silently=False,
+    )

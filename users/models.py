@@ -112,3 +112,24 @@ class PendingUser(models.Model):
 
     def __str__(self):
         return f'Pending {self.email} ({self.otp_code})'
+
+
+class PasswordResetOTP(models.Model):
+    """
+    Stores OTP codes for password reset requests.
+    """
+    email = models.EmailField()
+    otp_code = models.CharField(max_length=6)
+    is_verified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'password_reset_otps'
+        ordering = ['-created_at']
+
+    def is_expired(self):
+        expiry_minutes = getattr(settings, 'OTP_EXPIRY_MINUTES', 5)
+        return timezone.now() > self.created_at + timezone.timedelta(minutes=expiry_minutes)
+
+    def __str__(self):
+        return f'PasswordReset OTP {self.otp_code} for {self.email}'
