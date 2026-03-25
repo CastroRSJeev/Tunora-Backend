@@ -6,7 +6,11 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from django.contrib.auth.hashers import make_password
 from django.utils import timezone
+from django.db.models import Q
 from .models import User, OTP, PendingUser, PasswordResetOTP
+# Use string-based or deferred import if needed, but here we can just import from other apps
+from songs.models import Song, SongPlay
+from songs.serializers import SongSerializer
 from .serializers import (
     RegisterSerializer,
     VerifyOTPSerializer,
@@ -148,16 +152,38 @@ def resend_otp_view(request):
 def login_view(request):
     """
     Authenticate user and return JWT tokens + user data.
-
-    POST /api/auth/login/
-    Body: { email, password }
+    Admins must verify OTP after password login.
     """
     serializer = LoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
     user = serializer.validated_data['user']
 
-    # Generate JWT tokens
+    # Check if user is banned
+    if getattr(user, 'is_banned', False):
+        return Response(
+            {'error': 'Your account has been banned by the administrator. Please contact support if you believe this is an error.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    # For admins, require OTP every time
+    if user.role == 'admin':
+        otp_code = generate_otp()
+        OTP.objects.filter(user=user).delete() # Simple clear old
+        OTP.objects.create(user=user, code=otp_code)
+        
+        try:
+            send_otp_email(user.email, otp_code)
+        except Exception:
+            pass
+            
+        return Response({
+            'message': 'Admin verification required.',
+            'email': user.email,
+            'requires_otp': True
+        }, status=status.HTTP_202_ACCEPTED)
+
+    # Regular user: Generate JWT tokens
     refresh = RefreshToken.for_user(user)
 
     return Response(
@@ -171,6 +197,39 @@ def login_view(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def verify_admin_login_otp(request):
+    """
+    Verify OTP for admin login and return tokens.
+    """
+    email = request.data.get('email')
+    otp_code = request.data.get('otp')
+
+    try:
+        user = User.objects.get(email=email, role='admin')
+        otp = OTP.objects.filter(user=user, code=otp_code, is_used=False).first()
+        
+        if not otp or otp.is_expired():
+            return Response({'error': 'Invalid or expired OTP.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        otp.is_used = True
+        otp.save()
+        
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'message': 'Admin login successful.',
+            'tokens': {
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+            },
+            'user': UserSerializer(user).data,
+        }, status=status.HTTP_200_OK)
+        
+    except User.DoesNotExist:
+        return Response({'error': 'Admin user not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 @api_view(['POST'])
@@ -346,3 +405,91 @@ def reset_password_view(request):
         {'message': 'Password reset successfully. You can now log in.'},
         status=status.HTTP_200_OK,
     )
+# Admin Management Views
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_dashboard_stats(request):
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+        
+    stats = {
+        'total_listeners': User.objects.filter(role='listener').count(),
+        'total_artists': User.objects.filter(role='artist').count(),
+        'total_songs': Song.objects.count(),
+        'blocked_songs': Song.objects.filter(is_blocked=True).count(),
+        'banned_users': User.objects.filter(is_banned=True).count(),
+        'total_plays': SongPlay.objects.count(),
+    }
+    return Response(stats)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_list_users(request):
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+        
+    role = request.query_params.get('role')
+    search = request.query_params.get('q', '')
+    
+    users = User.objects.all()
+    if role:
+        users = users.filter(role=role)
+    if search:
+        users = users.filter(Q(email__icontains=search) | Q(username__icontains=search))
+        
+    return Response(UserSerializer(users, many=True).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_toggle_user_ban(request, user_id):
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+        
+    try:
+        user = User.objects.get(id=user_id)
+        if user == request.user:
+            return Response({'error': 'You cannot ban yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        user.is_banned = not user.is_banned
+        user.is_active = not user.is_banned  # Deactivate if banned, activate if unbanned
+        user.save()
+        return Response({'status': 'success', 'is_banned': user.is_banned, 'is_active': user.is_active})
+    except User.DoesNotExist:
+        return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_list_songs(request):
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+        
+    search = request.query_params.get('q', '')
+    status_filter = request.query_params.get('status') # 'blocked' or 'public'
+    
+    songs = Song.objects.all().select_related('uploaded_by')
+    if search:
+        songs = songs.filter(Q(title__icontains=search) | Q(artist__icontains=search))
+    if status_filter == 'blocked':
+        songs = songs.filter(is_blocked=True)
+    elif status_filter == 'public':
+        songs = songs.filter(is_blocked=False)
+        
+    return Response(SongSerializer(songs, many=True).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_toggle_song_block(request, song_id):
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+        
+    try:
+        song = Song.objects.get(id=song_id)
+        song.is_blocked = not song.is_blocked
+        song.save()
+        return Response({'status': 'success', 'is_blocked': song.is_blocked})
+    except Song.DoesNotExist:
+        return Response({'error': 'Song not found.'}, status=status.HTTP_404_NOT_FOUND)

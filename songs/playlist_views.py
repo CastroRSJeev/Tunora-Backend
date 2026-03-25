@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import Q, Prefetch
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly, AllowAny
@@ -39,7 +39,9 @@ def create_playlist(request):
 @permission_classes([IsAuthenticated])
 def my_playlists(request):
     """List all playlists owned by the authenticated user."""
-    playlists = Playlist.objects.filter(owner=request.user)
+    playlists = Playlist.objects.filter(owner=request.user).prefetch_related(
+        Prefetch('playlist_songs', queryset=PlaylistSong.objects.select_related('song'))
+    )
     return Response(PlaylistSerializer(playlists, many=True, context={'request': request}).data)
 
 
@@ -53,7 +55,9 @@ def public_playlists(request):
         playlists = playlists.filter(
             Q(name__icontains=query) | Q(description__icontains=query) | Q(owner__username__icontains=query)
         )
-    playlists = playlists.order_by('-updated_at')[:50]
+    playlists = playlists.order_by('-updated_at')[:50].prefetch_related(
+        Prefetch('playlist_songs', queryset=PlaylistSong.objects.select_related('song'))
+    )
     return Response(PlaylistSerializer(playlists, many=True, context={'request': request}).data)
 
 

@@ -1,4 +1,4 @@
-from django.db.models import Q, Sum, Count, F
+from django.db.models import Q, Sum, Count, F, Exists, OuterRef
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from rest_framework import viewsets, permissions, status
@@ -10,7 +10,7 @@ import cloudinary.uploader
 from datetime import timedelta
 from .models import Song, SongPlay, SongLike, Playlist, PlaylistSong
 from .serializers import SongSerializer, PlaylistSerializer
-from recommendations.ml import embed
+# deferred import of embed from recommendations.ml inside the function to avoid load time overhead
 
 class SongViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -21,14 +21,40 @@ class SongViewSet(viewsets.ReadOnlyModelViewSet):
     pagination_class = None
 
     def get_queryset(self):
-        queryset = Song.objects.all()
+        # Using select_related for the uploader (N+1 fix)
+        queryset = Song.objects.select_related('uploaded_by')
+
+        user = self.request.user
+        
+        # Filtering for blocked songs
+        if user.is_authenticated:
+            if user.role == 'admin':
+                # Admins see everything
+                pass
+            elif user.role == 'artist':
+                # Artist sees their own (even if blocked) + others' unblocked
+                # Use exclude to handle potential nulls in MongoDB for existing records
+                queryset = queryset.filter(Q(uploaded_by=user) | ~Q(is_blocked=True))
+            else:
+                # Listener sees only unblocked
+                queryset = queryset.exclude(is_blocked=True)
+        else:
+            # Anonymous sees only unblocked
+            queryset = queryset.exclude(is_blocked=True)
+
+        if user.is_authenticated:
+            # Annotate if current user liked the song
+            likes = SongLike.objects.filter(song=OuterRef('pk'), user=user)
+            queryset = queryset.annotate(is_liked_by_user=Exists(likes))
+
+        # Search Filters
         genres = self.request.query_params.getlist('genres')
         authors = self.request.query_params.getlist('authors')
 
         if genres:
             genre_q = Q()
             for g in genres:
-                genre_q |= Q(genre__icontains=g)  # JSONField supports icontains on serialized value
+                genre_q |= Q(genre__icontains=g)
             queryset = queryset.filter(genre_q)
 
         if authors:
@@ -61,6 +87,9 @@ class SongViewSet(viewsets.ReadOnlyModelViewSet):
 @permission_classes([IsAuthenticated])
 def upload_song(request):
     """Artist-only: upload a song with cover image and audio file."""
+    # Lazy import ML module to avoid heavy startup overhead
+    from recommendations.ml import embed
+    
     if request.user.role != 'artist':
         return Response({'error': 'Only artists can upload songs.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -122,8 +151,14 @@ def my_songs(request):
     """Return songs uploaded by the current artist."""
     if request.user.role != 'artist':
         return Response({'error': 'Only artists can access this.'}, status=status.HTTP_403_FORBIDDEN)
-    songs = Song.objects.filter(uploaded_by=request.user)
-    return Response(SongSerializer(songs, many=True).data)
+    
+    songs = Song.objects.filter(uploaded_by=request.user).select_related('uploaded_by')
+    
+    # Annotate like status
+    likes = SongLike.objects.filter(song=OuterRef('pk'), user=request.user)
+    songs = songs.annotate(is_liked_by_user=Exists(likes))
+    
+    return Response(SongSerializer(songs, many=True, context={'request': request}).data)
 
 
 @api_view(['PATCH'])
@@ -234,17 +269,24 @@ def artist_analytics(request):
     total_plays = songs.aggregate(total=Sum('play_count'))['total'] or 0
     total_likes = songs.aggregate(total=Sum('like_count'))['total'] or 0
 
-    # Total watch hours from SongPlay records
     total_seconds = SongPlay.objects.filter(song_id__in=song_ids).aggregate(
         total=Sum('duration_listened')
     )['total'] or 0
-    watch_hours = round(total_seconds / 3600, 1)
+    
+    # Satisfy rounding linting while keeping precision
+    watch_hours = float(round(total_seconds / 3600.0, 1))
 
     # Top songs by play count
     top_songs = songs.order_by('-play_count')[:10]
     user_liked_song_ids = set()
     if request.user.is_authenticated:
         user_liked_song_ids = set(SongLike.objects.filter(user=request.user, song__in=top_songs).values_list('song_id', flat=True))
+
+    # Calculate watch hours per song
+    song_watch_times = SongPlay.objects.filter(song_id__in=song_ids).values('song_id').annotate(
+        total_seconds=Sum('duration_listened')
+    )
+    song_watch_dict = {str(sw['song_id']): float(round(sw['total_seconds'] / 3600.0, 2)) for sw in song_watch_times}
 
     top_songs_data = [
         {
@@ -256,34 +298,40 @@ def artist_analytics(request):
             'like_count': s.like_count,
             'is_liked': s.id in user_liked_song_ids,
             'genre': s.genre,
+            'watch_hours': song_watch_dict.get(str(s.id), 0.0),
         }
         for s in top_songs
     ]
 
-    # Daily plays over last X days
+    # Daily plays and watch hours over last X days
     try:
         days = int(request.query_params.get('days', 30))
     except ValueError:
         days = 30
         
     time_ago = timezone.now() - timedelta(days=days)
-    daily_plays = (
+    daily_analytics = (
         SongPlay.objects
         .filter(song_id__in=song_ids, played_at__gte=time_ago)
         .annotate(date=TruncDate('played_at'))
         .values('date')
-        .annotate(plays=Count('id'))
+        .annotate(
+            plays=Count('id'),
+            seconds=Sum('duration_listened')
+        )
         .order_by('date')
     )
 
     # Fill in missing days with 0
-    daily_plays_dict = {str(dp['date']): dp['plays'] for dp in daily_plays}
+    daily_analytics_dict = {str(da['date']): {'plays': da['plays'], 'hours': float(round((da['seconds'] or 0) / 3600.0, 2))} for da in daily_analytics}
     daily_data = []
     for i in range(days):
         date = (timezone.now() - timedelta(days=(days - 1) - i)).date()
+        entry = daily_analytics_dict.get(str(date), {'plays': 0, 'hours': 0.0})
         daily_data.append({
             'date': str(date),
-            'plays': daily_plays_dict.get(str(date), 0),
+            'plays': entry['plays'],
+            'hours': entry['hours'],
         })
 
     # Genre breakdown

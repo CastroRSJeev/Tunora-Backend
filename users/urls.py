@@ -15,4 +15,12 @@ urlpatterns = [
     path('forgot-password/', views.forgot_password_view, name='forgot-password'),
     path('verify-reset-otp/', views.verify_reset_otp_view, name='verify-reset-otp'),
     path('reset-password/', views.reset_password_view, name='reset-password'),
+    path('verify-admin-otp/', views.verify_admin_login_otp, name='verify-admin-otp'),
+    
+    # Admin Management
+    path('admin/stats/', views.admin_dashboard_stats, name='admin-stats'),
+    path('admin/users/', views.admin_list_users, name='admin-list-users'),
+    path('admin/users/<str:user_id>/toggle-ban/', views.admin_toggle_user_ban, name='admin-toggle-ban'),
+    path('admin/songs/', views.admin_list_songs, name='admin-list-songs'),
+    path('admin/songs/<str:song_id>/toggle-block/', views.admin_toggle_song_block, name='admin-toggle-block'),
 ]

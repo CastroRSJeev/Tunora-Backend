@@ -15,6 +15,7 @@ class Song(models.Model):
     embedding = ArrayField(models.FloatField(), size=384, blank=True, null=True)
     play_count = models.IntegerField(default=0)
     like_count = models.IntegerField(default=0)
+    is_blocked = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

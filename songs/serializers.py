@@ -8,7 +8,7 @@ class SongSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Song
-        fields = ['id', 'title', 'artist', 'genre', 'cover_url', 'audio_url', 'duration', 'description', 'created_at', 'uploaded_by', 'play_count', 'like_count', 'is_liked']
+        fields = ['id', 'title', 'artist', 'genre', 'cover_url', 'audio_url', 'duration', 'description', 'created_at', 'uploaded_by', 'play_count', 'like_count', 'is_liked', 'is_blocked']
 
     def get_uploaded_by(self, obj):
         if obj.uploaded_by:
